@@ -35,8 +35,5 @@ webproxy_noasan: $(PROXY_OBJ_NOASAN)
 .PHONY: clean
 
 clean:
-	mv gfserver.o gfserver.tmpo 
-	mv gfserver_noasan.o gfserver_noasan.tmpo
-	rm -rf *.o webproxy webproxy_noasan
-	mv gfserver.tmpo gfserver.o
-	mv gfserver_noasan.tmpo gfserver_noasan.o
+	rm -f webproxy.o steque.o handle_with_curl.o webproxy_noasan.o steque_noasan.o handle_with_curl_noasan.o
+	rm -f webproxy webproxy_noasan

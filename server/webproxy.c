@@ -27,6 +27,7 @@ static gfserver_t gfs;
 static void _sig_handler(int signo){
   if (signo == SIGTERM || signo == SIGINT){
     gfserver_stop(&gfs);
+    curl_global_cleanup();
     exit(signo);
   }
 }
@@ -40,6 +41,9 @@ int main(int argc, char **argv) {
   unsigned short port = 16652;
   unsigned short nworkerthreads = 8;
   const char *server = "https://raw.githubusercontent.com/gt-cs6200/image_data";
+
+  // Initialize curl globally
+  curl_global_init(CURL_GLOBAL_ALL);
 
   // disable buffering on stdout
   setbuf(stdout, NULL);
@@ -97,14 +101,15 @@ int main(int argc, char **argv) {
 
   // Initialize server structure here
   gfserver_init(&gfs, nworkerthreads);
-// Set server options here
+  // Set server options here
   gfserver_setopt(&gfs, GFS_MAXNPENDING, 90);
-  gfserver_setopt(&gfs, GFS_WORKER_FUNC, handle_with_file);
+  gfserver_setopt(&gfs, GFS_WORKER_FUNC, handle_with_curl);
   gfserver_setopt(&gfs, GFS_PORT, port);
   // Set up arguments for worker here
   for(i = 0; i < nworkerthreads; i++) {
-    gfserver_setopt(&gfs, GFS_WORKER_ARG, i, "arg");
+    gfserver_setopt(&gfs, GFS_WORKER_ARG, i, server);
   }
+  // Debug: fprintf(stdout, "Server started.\n");
   // Invoke the framework - this is an infinite loop and shouldn't return
   gfserver_serve(&gfs);
   // not reached
