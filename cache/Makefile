@@ -12,11 +12,13 @@ endif
 PROXY_OBJ := webproxy.o steque.o
 PROXY_OBJ_NOASAN := webproxy_noasan.o steque_noasan.o
 
-all: clean all_asan all_noasan
+all:
+	$(MAKE) clean
+	$(MAKE) all_asan all_noasan
 
 all_asan: webproxy simplecached
 
-all_noasan: clean webproxy_noasan simplecached_noasan
+all_noasan: webproxy_noasan simplecached_noasan
 
 noasan: all_noasan
 

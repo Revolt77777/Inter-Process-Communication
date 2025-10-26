@@ -8,7 +8,26 @@
 Replace with your implementation
  __.__
 */
-ssize_t handle_with_cache(gfcontext_t *ctx, const char *path, void* arg){
+ssize_t handle_with_cache(gfcontext_t *ctx, const char *path, void* arg) {
+	fprintf(stdout, "Retrieving file %s from cache server\n", path);
+
+	// Sending request to request mq of cache server
+	mqd_t req_mq = mq_open(REQUEST_QUEUE_NAME, O_WRONLY);
+	if (req_mq == -1) {
+		fprintf(stderr, "Unable to open request queue.\n");
+		return -1;
+	}
+
+	int send = mq_send(req_mq, path, strlen(path), 0);
+	if (send == -1) {
+		fprintf(stderr, "Unable to send file.\n");
+		return -1;
+	}
+
+	return 0;
+}
+
+/*ssize_t handle_with_cache(gfcontext_t *ctx, const char *path, void* arg){
 	size_t file_len;
     size_t bytes_transferred;
 	char *data_dir = arg;
@@ -60,3 +79,4 @@ ssize_t handle_with_cache(gfcontext_t *ctx, const char *path, void* arg){
 
 
 }
+*/

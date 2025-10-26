@@ -21,7 +21,7 @@
 #endif 
 
 #define MAX_CACHE_REQUEST_LEN 6112
-#define MAX_SIMPLE_CACHE_QUEUE_SIZE 783
+#define MAX_SIMPLE_CACHE_QUEUE_SIZE 10
 
 unsigned long int cache_delay;
 
@@ -108,8 +108,33 @@ int main(int argc, char **argv) {
 	/*Initialize cache*/
 	simplecache_init(cachedir);
 
-	// Cache should go here
+	// Set up the POSIX message queue to handle incoming requests
+	struct mq_attr attr;
+	attr.mq_flags = 0;
+	attr.mq_maxmsg = MAX_SIMPLE_CACHE_QUEUE_SIZE;
+	attr.mq_msgsize = MAX_CACHE_REQUEST_LEN;
+	attr.mq_curmsgs = 0;
+
+	mqd_t req_mq = mq_open(REQUEST_QUEUE_NAME, O_CREAT | O_RDONLY, 0666, &attr);
+	if (req_mq == -1) {
+		fprintf(stderr, "Unable to open request queue: %s (errno:%d)\n", strerror(errno), errno);
+		exit(CACHE_FAILURE);
+	}
+
+	// Single-thread implementation
+	// Debug
+	fprintf(stdout, "Cache Server Initialized.\n Waiting for message.\n");
+	while(1) {
+		char buffer[MAX_CACHE_REQUEST_LEN];
+		ssize_t recv = mq_receive(req_mq, buffer, MAX_CACHE_REQUEST_LEN, NULL);
+		if (recv == -1) {
+			fprintf(stderr, "Unable to receive message.\n");
+		}
+		fprintf(stdout, "Cache Server Received Message: %s \n", buffer);
+	}
 
 	// Line never reached
+	fprintf(stderr, "req_mq closed, exiting...\n");
+	exit(CACHE_FAILURE);
 	return -1;
 }
