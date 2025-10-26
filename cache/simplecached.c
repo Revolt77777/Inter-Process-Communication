@@ -24,10 +24,17 @@
 #define MAX_SIMPLE_CACHE_QUEUE_SIZE 10
 
 unsigned long int cache_delay;
+mqd_t req_mq;
+steque_t queue;
+pthread_mutex_t mutex;
+pthread_cond_t cond;
 
 static void _sig_handler(int signo){
 	if (signo == SIGTERM || signo == SIGINT){
 		// This is where your IPC clean up should occur
+		simplecache_destroy();
+		mq_close(req_mq);
+		mq_unlink(REQUEST_QUEUE_NAME);
 		exit(signo);
 	}
 }
@@ -53,6 +60,28 @@ static struct option gLongOptions[] = {
 
 void Usage() {
   fprintf(stdout, "%s", USAGE);
+}
+
+void * worker_fn() {
+	while(1) {
+		pthread_mutex_lock(&mutex);
+		while (steque_isempty(&queue)) {
+			pthread_cond_wait(&cond, &mutex);
+		}
+		request_t *req = (request_t *)steque_pop(&queue);
+		pthread_mutex_unlock(&mutex);
+
+		fprintf(stdout, "Cache Server Received Request for: %s\n",req->path);
+		int fd = simplecache_get(req->path);
+		if (fd == -1) {
+			fprintf(stderr, "Unable to get file descriptor: %s (errno:%d)\n", strerror(errno), errno);
+			continue;
+		}
+		fprintf(stdout, "Cache Server Received File Descriptor: %d\n",fd);
+
+		free(req);
+	}
+	return NULL;
 }
 
 int main(int argc, char **argv) {
@@ -108,33 +137,59 @@ int main(int argc, char **argv) {
 	/*Initialize cache*/
 	simplecache_init(cachedir);
 
+	// Set up multi-threading management
+	steque_init(&queue);
+	pthread_mutex_init(&mutex, NULL);
+	pthread_cond_init(&cond, NULL);
+
+	pthread_t *tids = malloc(sizeof(pthread_t) * nthreads);
+
+	for (int i = 0; i < nthreads; i++) {
+		pthread_create(&tids[i], NULL, worker_fn, NULL);
+	}
+
 	// Set up the POSIX message queue to handle incoming requests
 	struct mq_attr attr;
-	attr.mq_flags = 0;
 	attr.mq_maxmsg = MAX_SIMPLE_CACHE_QUEUE_SIZE;
 	attr.mq_msgsize = MAX_CACHE_REQUEST_LEN;
-	attr.mq_curmsgs = 0;
 
-	mqd_t req_mq = mq_open(REQUEST_QUEUE_NAME, O_CREAT | O_RDONLY, 0666, &attr);
+	req_mq = mq_open(REQUEST_QUEUE_NAME, O_CREAT | O_RDONLY, 0666, &attr);
 	if (req_mq == -1) {
 		fprintf(stderr, "Unable to open request queue: %s (errno:%d)\n", strerror(errno), errno);
+		simplecache_destroy();
 		exit(CACHE_FAILURE);
 	}
 
 	// Single-thread implementation
 	// Debug
-	fprintf(stdout, "Cache Server Initialized.\n Waiting for message.\n");
+	fprintf(stdout, "Cache Server Initialized.\nWaiting for message.\n");
 	while(1) {
 		char buffer[MAX_CACHE_REQUEST_LEN];
 		ssize_t recv = mq_receive(req_mq, buffer, MAX_CACHE_REQUEST_LEN, NULL);
+
 		if (recv == -1) {
-			fprintf(stderr, "Unable to receive message.\n");
+			fprintf(stderr, "Unable to receive message: %s (errno:%d)\n", strerror(errno), errno);
+			continue;
 		}
-		fprintf(stdout, "Cache Server Received Message: %s \n", buffer);
+
+		if (recv != sizeof(request_t)) {
+			fprintf(stderr, "Received incorrect request message, skip.\n");
+			continue;
+		}
+
+		// Create copy of received request message to put on queue
+		request_t *req = malloc(sizeof(request_t));
+		memcpy(req, buffer, sizeof(request_t));
+
+		pthread_mutex_lock(&mutex);
+		steque_push(&queue, req);
+		pthread_cond_signal(&cond);
+		pthread_mutex_unlock(&mutex);
 	}
 
 	// Line never reached
 	fprintf(stderr, "req_mq closed, exiting...\n");
+	simplecache_destroy();
 	exit(CACHE_FAILURE);
 	return -1;
 }

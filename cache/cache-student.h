@@ -8,5 +8,8 @@
 static const char REQUEST_QUEUE_NAME[] = "/cache_request_q";
 static const char REPLY_QUEUE_NAME[] = "/cache_reply_q";
 
+typedef struct {
+    char path[256];
+} request_t;
 
 #endif // __CACHE_STUDENT_H__844

@@ -11,16 +11,35 @@ Replace with your implementation
 ssize_t handle_with_cache(gfcontext_t *ctx, const char *path, void* arg) {
 	fprintf(stdout, "Retrieving file %s from cache server\n", path);
 
-	// Sending request to request mq of cache server
-	mqd_t req_mq = mq_open(REQUEST_QUEUE_NAME, O_WRONLY);
-	if (req_mq == -1) {
-		fprintf(stderr, "Unable to open request queue.\n");
-		return -1;
+	// Generate request message
+	request_t req;
+	strcpy(req.path, path);
+
+	// Connect with cache server request message queue
+	mqd_t req_mq;
+	int retries = 0;
+	const int MAX_RETRIES = 10;
+
+	// Retry logic in case cache server hasn't set up yet
+	while ((req_mq = mq_open(REQUEST_QUEUE_NAME, O_WRONLY)) == -1) {
+		if (retries >= MAX_RETRIES) {
+			fprintf(stderr, "Unable to open request queue after %d retries: %s (errno:%d)\n",
+					MAX_RETRIES, strerror(errno), errno);
+			return -1;
+		}
+
+		fprintf(stderr, "Unable to open request queue (retry %d/%d): %s (errno:%d)\n",
+				retries + 1, MAX_RETRIES, strerror(errno), errno);
+
+		sleep(1);
+		retries++;
 	}
 
-	int send = mq_send(req_mq, path, strlen(path), 0);
+	// Sending request to request mq of cache server
+	int send = mq_send(req_mq, (char*)&req, sizeof(request_t), 0);
+	mq_close(req_mq);
 	if (send == -1) {
-		fprintf(stderr, "Unable to send file.\n");
+		fprintf(stderr, "Unable to send request: %s (errno:%d)\n", strerror(errno), errno);
 		return -1;
 	}
 
