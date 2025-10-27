@@ -28,13 +28,23 @@ mqd_t req_mq;
 steque_t queue;
 pthread_mutex_t mutex;
 pthread_cond_t cond;
+pthread_t *tids = NULL;
+int nthreads;
 
 static void _sig_handler(int signo){
 	if (signo == SIGTERM || signo == SIGINT){
-		// This is where your IPC clean up should occur
+		// Clean up synchronization primitives
+		pthread_mutex_destroy(&mutex);
+		pthread_cond_destroy(&cond);
+		steque_destroy(&queue);
+
+		// Clean up cache
 		simplecache_destroy();
+
+		// Clean up message queue
 		mq_close(req_mq);
 		mq_unlink(REQUEST_QUEUE_NAME);
+
 		exit(signo);
 	}
 }
@@ -68,16 +78,15 @@ void * worker_fn() {
 		while (steque_isempty(&queue)) {
 			pthread_cond_wait(&cond, &mutex);
 		}
-		request_t *req = (request_t *)steque_pop(&queue);
+		request_t *req = steque_pop(&queue);
 		pthread_mutex_unlock(&mutex);
-
 		fprintf(stdout, "Cache Server Received Request for: %s\n",req->path);
+		fprintf(stdout, "shm IPC segment name: %s\n", req->segname);
+		fprintf(stdout, "shm IPC segment size: %lu\n", req->segsize);
+
 		int fd = simplecache_get(req->path);
-		if (fd == -1) {
-			fprintf(stderr, "Unable to get file descriptor: %s (errno:%d)\n", strerror(errno), errno);
-			continue;
-		}
-		fprintf(stdout, "Cache Server Received File Descriptor: %d\n",fd);
+		fprintf(stdout, "File Descriptor for the target file: %d\n",fd);
+
 
 		free(req);
 	}
@@ -85,7 +94,7 @@ void * worker_fn() {
 }
 
 int main(int argc, char **argv) {
-	int nthreads = 6;
+	nthreads = 6;
 	char *cachedir = "locals.txt";
 	char option_char;
 
@@ -142,7 +151,7 @@ int main(int argc, char **argv) {
 	pthread_mutex_init(&mutex, NULL);
 	pthread_cond_init(&cond, NULL);
 
-	pthread_t *tids = malloc(sizeof(pthread_t) * nthreads);
+	tids = malloc(sizeof(pthread_t) * nthreads);
 
 	for (int i = 0; i < nthreads; i++) {
 		pthread_create(&tids[i], NULL, worker_fn, NULL);
@@ -156,12 +165,9 @@ int main(int argc, char **argv) {
 	req_mq = mq_open(REQUEST_QUEUE_NAME, O_CREAT | O_RDONLY, 0666, &attr);
 	if (req_mq == -1) {
 		fprintf(stderr, "Unable to open request queue: %s (errno:%d)\n", strerror(errno), errno);
-		simplecache_destroy();
-		exit(CACHE_FAILURE);
+		_sig_handler(SIGTERM);
 	}
 
-	// Single-thread implementation
-	// Debug
 	fprintf(stdout, "Cache Server Initialized.\nWaiting for message.\n");
 	while(1) {
 		char buffer[MAX_CACHE_REQUEST_LEN];

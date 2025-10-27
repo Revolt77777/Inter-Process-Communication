@@ -12,6 +12,7 @@
 
 #include "cache-student.h"
 #include "gfserver.h"
+#include "shm_channel.h"
 
 // Note that the -n and -z parameters are NOT used for Part 1 
                         
@@ -43,13 +44,25 @@ static struct option gLongOptions[] = {
 
 //gfs
 static gfserver_t gfs;
+
+//SHM_Segment pool
+shm_segment_t *seg_ids;
+unsigned int nsegments;
+
+steque_t queue;
+pthread_mutex_t mutex;
+pthread_cond_t cond;
+
 //handles cache
 extern ssize_t handle_with_cache(gfcontext_t *ctx, char *path, void* arg);
 
 static void _sig_handler(int signo){
   if (signo == SIGTERM || signo == SIGINT){
-    //cleanup could go here
     gfserver_stop(&gfs);
+    shm_cleanup(seg_ids, nsegments);
+    steque_destroy(&queue);
+    pthread_mutex_destroy(&mutex);
+    pthread_cond_destroy(&cond);
     exit(signo);
   }
 }
@@ -57,7 +70,7 @@ static void _sig_handler(int signo){
 int main(int argc, char **argv) {
   int option_char = 0;
   char *server = "https://raw.githubusercontent.com/gt-cs6200/image_data";
-  unsigned int nsegments = 8;
+  nsegments = 8;
   unsigned short port = 25362;
   unsigned short nworkerthreads = 8;
   size_t segsize = 5712;
@@ -137,10 +150,32 @@ int main(int argc, char **argv) {
 
 
 
-  /* Initialize shared memory set-up here
+  // Initialize shared memory set-up here
+  seg_ids = shm_init(nsegments, segsize);
+  if (seg_ids == NULL) {
+    fprintf(stderr, "Failed to initialize shared memory segments\n");
+    _sig_handler(SIGTERM);
+  }
+
+  // Initialize queue of segments
+  pthread_mutex_init(&mutex, NULL);
+  pthread_cond_init(&cond, NULL);
+  steque_init(&queue);
+
+  for (int i = 0; i < nsegments; i++) {
+    steque_enqueue(&queue, &seg_ids[i]);
+  }
+
+  // Initialize worker func args
+  seg_queue_args_t args;
+  args.queue = &queue;
+  args.mutex = &mutex;
+  args.cond = &cond;
+
+  // Debug
+  fprintf(stdout, "Setting up proxy server shm channel with %u segments.\n", nsegments);
 
   // Initialize server structure here
-  */
   gfserver_init(&gfs, nworkerthreads);
 
   // Set server options here
@@ -150,7 +185,7 @@ int main(int argc, char **argv) {
 
   // Set up arguments for worker here
   for(int i = 0; i < nworkerthreads; i++) {
-    gfserver_setopt(&gfs, GFS_WORKER_ARG, i, "data");
+    gfserver_setopt(&gfs, GFS_WORKER_ARG, i, &args);
   }
   
   // Invokethe framework - this is an infinite loop and will not return

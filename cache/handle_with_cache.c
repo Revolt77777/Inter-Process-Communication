@@ -1,5 +1,6 @@
 #include "gfserver.h"
 #include "cache-student.h"
+#include "shm_channel.h"
 
 #define BUFSIZE (840)
 
@@ -8,12 +9,25 @@
 Replace with your implementation
  __.__
 */
-ssize_t handle_with_cache(gfcontext_t *ctx, const char *path, void* arg) {
+ssize_t handle_with_cache(gfcontext_t *ctx, const char *path, seg_queue_args_t *arg) {
 	fprintf(stdout, "Retrieving file %s from cache server\n", path);
+
+	// Retrieve shm_segment from pool in proxy server
+	pthread_mutex_lock(arg->mutex);
+	while (steque_isempty(arg->queue)) {
+		pthread_cond_wait(arg->cond, arg->mutex);
+	}
+	shm_segment_t *seg = steque_pop(arg->queue);
+	pthread_mutex_unlock(arg->mutex);
+	fprintf(stdout, "Segment retrieved: %s\n",seg->name);
+	fprintf(stdout, "Cache Server Received File Descriptor: %d\n",seg->proxy_fd);
+	sleep(10);
 
 	// Generate request message
 	request_t req;
 	strcpy(req.path, path);
+	strcpy(req.segname, seg->name);
+	req.segsize = seg->segsize;
 
 	// Connect with cache server request message queue
 	mqd_t req_mq;
@@ -43,6 +57,13 @@ ssize_t handle_with_cache(gfcontext_t *ctx, const char *path, void* arg) {
 		return -1;
 	}
 
+	// Rest and return the segment to the pool
+	shm_reset_segment(seg);
+	pthread_mutex_lock(arg->mutex);
+	steque_push(arg->queue, seg);
+	pthread_cond_signal(arg->cond);
+	pthread_mutex_unlock(arg->mutex);
+	fprintf(stdout, "Segment returned: %s\n",seg->name);
 	return 0;
 }
 
