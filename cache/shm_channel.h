@@ -26,8 +26,7 @@ typedef struct {
 typedef struct {
     char name[MAX_SEG_NAME_LEN];
     size_t segsize;
-    int proxy_fd;
-    void* proxy_ptr;  // Points to segment start: [sem_t][shm_header_t][data...]
+    void* proxy_ptr;
 } shm_segment_t;
 
 typedef struct {
@@ -39,8 +38,8 @@ typedef struct {
 // Helper macros to access components within shared memory
 // Memory layout: [sem_data_ready][sem_read_done][shm_header_t][data...]
 // Works with raw pointer from mmap (for both proxy and cache)
-#define SHM_SEM_DATA_READY(ptr) ((sem_t*)(ptr))
-#define SHM_SEM_READ_DONE(ptr)  ((sem_t*)((char*)(ptr) + sizeof(sem_t)))
+#define SHM_SEM_WRITE(ptr)      ((sem_t*)(ptr))
+#define SHM_SEM_READ(ptr)       ((sem_t*)((char*)(ptr) + sizeof(sem_t)))
 #define SHM_HEADER(ptr)         ((shm_header_t*)((char*)(ptr) + 2*sizeof(sem_t)))
 #define SHM_DATA(ptr)           ((void*)((char*)(ptr) + 2*sizeof(sem_t) + sizeof(shm_header_t)))
 #define SHM_DATA_SIZE(segsize)  ((segsize) - 2*sizeof(sem_t) - sizeof(shm_header_t))

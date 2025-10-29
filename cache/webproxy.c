@@ -172,8 +172,7 @@ int main(int argc, char **argv) {
   args.mutex = &mutex;
   args.cond = &cond;
 
-  // Debug
-  fprintf(stdout, "Setting up proxy server shm channel with %u segments.\n", nsegments);
+  // fprintf(stdout, "Setting up proxy server shm channel with %u segments.\n", nsegments);
 
   // Initialize server structure here
   gfserver_init(&gfs, nworkerthreads);

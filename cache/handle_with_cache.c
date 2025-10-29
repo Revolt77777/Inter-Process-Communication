@@ -4,13 +4,16 @@
 
 #define BUFSIZE (840)
 
-/*
- __.__
-Replace with your implementation
- __.__
-*/
+void return_segment(seg_queue_args_t *arg, shm_segment_t *seg) {
+	shm_reset_segment(seg);
+	pthread_mutex_lock(arg->mutex);
+	steque_push(arg->queue, seg);
+	pthread_cond_signal(arg->cond);
+	pthread_mutex_unlock(arg->mutex);
+}
+
 ssize_t handle_with_cache(gfcontext_t *ctx, const char *path, seg_queue_args_t *arg) {
-	fprintf(stdout, "Retrieving file %s from cache server\n", path);
+	// fprintf(stdout, "Retrieving file %s from cache server\n", path);
 
 	// Retrieve shm_segment from pool in proxy server
 	pthread_mutex_lock(arg->mutex);
@@ -19,9 +22,7 @@ ssize_t handle_with_cache(gfcontext_t *ctx, const char *path, seg_queue_args_t *
 	}
 	shm_segment_t *seg = steque_pop(arg->queue);
 	pthread_mutex_unlock(arg->mutex);
-	fprintf(stdout, "Segment retrieved: %s\n",seg->name);
-	fprintf(stdout, "Cache Server Received File Descriptor: %d\n",seg->proxy_fd);
-	sleep(10);
+	// fprintf(stdout, "Segment retrieved: %s\n",seg->name);
 
 	// Generate request message
 	request_t req;
@@ -57,14 +58,51 @@ ssize_t handle_with_cache(gfcontext_t *ctx, const char *path, seg_queue_args_t *
 		return -1;
 	}
 
-	// Rest and return the segment to the pool
-	shm_reset_segment(seg);
-	pthread_mutex_lock(arg->mutex);
-	steque_push(arg->queue, seg);
-	pthread_cond_signal(arg->cond);
-	pthread_mutex_unlock(arg->mutex);
-	fprintf(stdout, "Segment returned: %s\n",seg->name);
-	return 0;
+	// Calculate the section pointer
+	sem_t *read_sem = SHM_SEM_READ(seg->proxy_ptr);
+	sem_t *write_sem = SHM_SEM_WRITE(seg->proxy_ptr);
+	shm_header_t *header = SHM_HEADER(seg->proxy_ptr);
+	void *data = SHM_DATA(seg->proxy_ptr);
+
+	// Wait for first response
+	sem_wait(write_sem);
+
+	// Parse the first header
+	// fprintf(stdout, "Received header %d, %lu, %lu.\n", header->status, header->file_len, header->chunk_len);
+	if (header->status == SEG_STATUS_NOT_FOUND) {
+		return_segment(arg, seg);
+		return gfs_sendheader(ctx, GF_FILE_NOT_FOUND, 0);
+	}
+
+	gfs_sendheader(ctx, GF_OK, header->file_len);
+
+	// Sending the file chunk by chunk
+	size_t byteTransfered = 0;
+	while (byteTransfered < header->file_len) {
+		size_t write_len = gfs_send(ctx, data, header->chunk_len);
+
+		if (write_len != header->chunk_len){
+			fprintf(stderr, "server write error with %lu chunk_len and %lu write_len and %lu bytestransfered.\n", header->chunk_len, write_len, byteTransfered);
+		}
+		byteTransfered += write_len;
+		// fprintf(stdout, "%lu bytes transfered with %lu chunk_len, %lu/%lu.\n", write_len, header->chunk_len, byteTransfered, header->file_len);
+
+		// Signal done reading and wait for next chunk (but not after last)
+		if (byteTransfered < header->file_len) {
+			sem_post(read_sem);
+			sem_wait(write_sem);
+		}
+	}
+
+	// Verify completion
+	if (header->status != SEG_STATUS_COMPLETED) {
+		fprintf(stderr, "Warning: transferred %zu but expected %zu, status is incompleted.\n", byteTransfered, header->file_len);
+	}
+
+	// Reset and return the segment to the pool
+	return_segment(arg, seg);
+	// fprintf(stdout, "File transfer completed with %zu bytes.\n", byteTransfered);
+	return byteTransfered;
 }
 
 /*ssize_t handle_with_cache(gfcontext_t *ctx, const char *path, void* arg){

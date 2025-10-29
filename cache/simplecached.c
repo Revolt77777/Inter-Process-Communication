@@ -30,9 +30,24 @@ pthread_mutex_t mutex;
 pthread_cond_t cond;
 pthread_t *tids = NULL;
 int nthreads;
+int shutdown_flag = 0;
 
 static void _sig_handler(int signo){
 	if (signo == SIGTERM || signo == SIGINT){
+		// Signal all threads to shut down
+		pthread_mutex_lock(&mutex);
+		shutdown_flag = 1;
+		pthread_cond_broadcast(&cond);  // Wake all waiting threads
+		pthread_mutex_unlock(&mutex);
+
+		// Join all threads
+		if (tids != NULL) {
+			for (int i = 0; i < nthreads; i++) {
+				pthread_join(tids[i], NULL);
+			}
+			free(tids);
+		}
+
 		// Clean up synchronization primitives
 		pthread_mutex_destroy(&mutex);
 		pthread_cond_destroy(&cond);
@@ -75,19 +90,100 @@ void Usage() {
 void * worker_fn() {
 	while(1) {
 		pthread_mutex_lock(&mutex);
+
+		// Check shutdown flag
+		if (shutdown_flag) {
+			pthread_mutex_unlock(&mutex);
+			return NULL;
+		}
+
 		while (steque_isempty(&queue)) {
 			pthread_cond_wait(&cond, &mutex);
+			// Check again after waking up
+			if (shutdown_flag) {
+				pthread_mutex_unlock(&mutex);
+				return NULL;
+			}
 		}
 		request_t *req = steque_pop(&queue);
 		pthread_mutex_unlock(&mutex);
-		fprintf(stdout, "Cache Server Received Request for: %s\n",req->path);
-		fprintf(stdout, "shm IPC segment name: %s\n", req->segname);
-		fprintf(stdout, "shm IPC segment size: %lu\n", req->segsize);
+		// fprintf(stdout, "Cache Server Received Request for: %s\n",req->path);
+		// fprintf(stdout, "shm IPC segment name: %s\n", req->segname);
+		// fprintf(stdout, "shm IPC segment size: %lu\n", req->segsize);
 
-		int fd = simplecache_get(req->path);
-		fprintf(stdout, "File Descriptor for the target file: %d\n",fd);
+		int shm_fd = shm_open(req->segname, O_RDWR, 0666);
+		if (shm_fd == -1) {
+			fprintf(stderr, "Unable to open shm IPC segment.\n");
+			free(req);
+			continue;
+		}
+		void *ptr = mmap(0, req->segsize, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+		close(shm_fd);
+		if (ptr == MAP_FAILED) {
+			fprintf(stderr, "Unable to map shm IPC segment.\n");
+			free(req);
+			continue;
+		}
 
+		// Get section pointers
+		sem_t *sem_write = SHM_SEM_WRITE(ptr);
+		sem_t *sem_read = SHM_SEM_READ(ptr);
+		shm_header_t *header = SHM_HEADER(ptr);
+		void *data = SHM_DATA(ptr);
+		size_t data_size = SHM_DATA_SIZE(req->segsize);
 
+		// Try to open the target file fd
+		int file_fd = simplecache_get(req->path);
+
+		if (file_fd < 0) {
+			// File not found
+			header->status = SEG_STATUS_NOT_FOUND;
+			header->file_len = 0;
+			header->chunk_len = 0;
+			sem_post(sem_write);
+			continue;
+		}
+
+		// Get file size
+		struct stat st;
+		fstat(file_fd, &st);
+
+		// Set initial header
+		header->file_len = st.st_size;
+
+		// Wait for initial permission (sem_read starts at 1)
+		sem_wait(sem_read);
+
+		// Send the file chunk by chunk
+		size_t byteTransfered = 0;
+		while (byteTransfered < st.st_size) {
+			ssize_t read_len = pread(file_fd, data, data_size, byteTransfered);
+			if (read_len <= 0) {
+				fprintf(stderr, "Read file error.\n");
+				break;
+			}
+
+			// fprintf(stdout, "%lu bytes transfered, %lu/%lu.\n", read_len, byteTransfered, st.st_size);
+			byteTransfered += read_len;
+
+			// Update header
+			header->chunk_len = read_len;
+			if (byteTransfered >= st.st_size) {
+				header->status = SEG_STATUS_COMPLETED;
+			} else {
+				header->status = SEG_STATUS_IN_PROGRESS;
+			}
+
+			// Signal data ready
+			sem_post(sem_write);
+
+			// Wait for proxy to finish reading (but not after last chunk)
+			if (byteTransfered < st.st_size) {
+				sem_wait(sem_read);
+			}
+		}
+		// fprintf(stdout, "File transfer completed with %zu bytes.\n", byteTransfered);
+		munmap(ptr, req->segsize);
 		free(req);
 	}
 	return NULL;
@@ -168,7 +264,7 @@ int main(int argc, char **argv) {
 		_sig_handler(SIGTERM);
 	}
 
-	fprintf(stdout, "Cache Server Initialized.\nWaiting for message.\n");
+	// fprintf(stdout, "Cache Server Initialized.\nWaiting for message.\n");
 	while(1) {
 		char buffer[MAX_CACHE_REQUEST_LEN];
 		ssize_t recv = mq_receive(req_mq, buffer, MAX_CACHE_REQUEST_LEN, NULL);
